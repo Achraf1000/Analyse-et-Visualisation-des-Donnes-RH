@@ -16,10 +16,12 @@ import {
   YAxis,
 } from 'recharts'
 
+import { ActiveImportNotice } from '../components/ActiveImportNotice'
 import { ChartCard } from '../components/ChartCard'
 import { FilterBar } from '../components/FilterBar'
 import { KPIGrid } from '../components/KPIGrid'
 import { useGlobalFilters } from '../context/useGlobalFilters'
+import { useActiveImport } from '../hooks/useActiveImport'
 import { api } from '../lib/api'
 
 const palette = ['#0f766e', '#f97316', '#0f172a', '#14b8a6', '#facc15']
@@ -27,10 +29,12 @@ const palette = ['#0f766e', '#f97316', '#0f172a', '#14b8a6', '#facc15']
 export function DashboardPage() {
   const { filters } = useGlobalFilters()
   const deferredFilters = useDeferredValue(filters)
+  const importsQuery = useActiveImport()
 
   const dashboardQuery = useQuery({
     queryKey: ['dashboard', deferredFilters],
     queryFn: () => api.getDashboard(deferredFilters),
+    enabled: importsQuery.hasActiveImport,
   })
 
   const dashboard = dashboardQuery.data
@@ -40,24 +44,27 @@ export function DashboardPage() {
       <section className="hero-panel">
         <div>
           <p className="eyebrow">Pilotage RH</p>
-          <h2>Vue synthétique des indicateurs clés</h2>
+          <h2>Vue synthetique des indicateurs cles</h2>
           <p className="muted-copy">
-            Les KPI et graphiques se recalculent automatiquement à partir du dataset actif et des filtres globaux.
+            Les KPI et graphiques se recalculent automatiquement a partir du dataset actif et des filtres globaux.
           </p>
         </div>
       </section>
 
-      <FilterBar options={dashboard?.filters} />
+      {importsQuery.isLoading ? <div className="loading-card">Verification du dataset actif...</div> : null}
+      {!importsQuery.isLoading && !importsQuery.hasActiveImport ? <ActiveImportNotice hasImports={importsQuery.hasImports} /> : null}
 
-      {dashboardQuery.isLoading ? <div className="loading-card">Chargement du tableau de bord...</div> : null}
-      {dashboardQuery.isError ? <div className="empty-card">{dashboardQuery.error.message}</div> : null}
+      {importsQuery.hasActiveImport ? <FilterBar options={dashboard?.filters} /> : null}
 
-      {dashboard ? (
+      {importsQuery.hasActiveImport && dashboardQuery.isLoading ? <div className="loading-card">Chargement du tableau de bord...</div> : null}
+      {importsQuery.hasActiveImport && dashboardQuery.isError ? <div className="empty-card">{dashboardQuery.error.message}</div> : null}
+
+      {importsQuery.hasActiveImport && dashboard ? (
         <>
           <KPIGrid kpis={dashboard.kpis} />
 
           <div className="chart-grid chart-grid-wide">
-            <ChartCard title="Effectif et turnover par département" subtitle="Barres: effectif, ligne: turnover">
+            <ChartCard title="Effectif et turnover par departement" subtitle="Barres: effectif, ligne: turnover">
               <ResponsiveContainer width="100%" height={320}>
                 <ComposedChart data={dashboard.charts.departmentHeadcount}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
@@ -72,7 +79,7 @@ export function DashboardPage() {
               </ResponsiveContainer>
             </ChartCard>
 
-            <ChartCard title="Répartition par sexe">
+            <ChartCard title="Repartition par sexe">
               <ResponsiveContainer width="100%" height={320}>
                 <PieChart>
                   <Pie data={dashboard.charts.genderDistribution} dataKey="value" nameKey="name" innerRadius={70} outerRadius={100}>
@@ -86,7 +93,7 @@ export function DashboardPage() {
               </ResponsiveContainer>
             </ChartCard>
 
-            <ChartCard title="Distribution de l’ancienneté">
+            <ChartCard title="Distribution de l'anciennete">
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={dashboard.charts.tenureDistribution}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
@@ -98,7 +105,7 @@ export function DashboardPage() {
               </ResponsiveContainer>
             </ChartCard>
 
-            <ChartCard title="Distribution des risques prédits">
+            <ChartCard title="Distribution des risques predits">
               <ResponsiveContainer width="100%" height={300}>
                 <BarChart data={dashboard.charts.riskDistribution}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />

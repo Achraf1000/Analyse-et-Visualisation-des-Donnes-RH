@@ -5,9 +5,66 @@ import { DataTable } from '../components/DataTable'
 import { api } from '../lib/api'
 import { formatDateTime } from '../lib/format'
 
-function IssueInput({ issue, drafts, setDrafts, onSave, isPending }) {
+const AUTO_FIXABLE_ISSUE_CODES = new Set(['duplicate_employee_id'])
+
+function issueKey(issue) {
+  return `${issue.recordId}:${issue.fieldName}`
+}
+
+function buildDuplicateEmployeeIdPatches(issues) {
+  const duplicateIssues = issues
+    .filter((issue) => issue.issueCode === 'duplicate_employee_id' && issue.fieldName === 'employee_id' && issue.recordId)
+    .sort((first, second) => {
+      const firstValue = String(first.currentValue || '').localeCompare(String(second.currentValue || ''))
+      if (firstValue !== 0) return firstValue
+      return (first.rowIndex || 0) - (second.rowIndex || 0)
+    })
+
+  const groups = duplicateIssues.reduce((accumulator, issue) => {
+    const value = String(issue.currentValue || '').trim()
+    if (!value) return accumulator
+    const key = value.toLowerCase()
+    const group = accumulator.get(key) || []
+    group.push(issue)
+    accumulator.set(key, group)
+    return accumulator
+  }, new Map())
+
+  const usedValues = new Set(duplicateIssues.map((issue) => String(issue.currentValue || '').trim().toLowerCase()).filter(Boolean))
+  const patches = []
+
+  groups.forEach((group) => {
+    group.forEach((issue, index) => {
+      if (index === 0) return
+
+      const baseValue = String(issue.currentValue || '').trim()
+      const rowSuffix = issue.rowIndex ? `L${issue.rowIndex}` : `${index + 1}`
+      let nextValue = `${baseValue}-${rowSuffix}`
+      let collisionIndex = 2
+
+      while (usedValues.has(nextValue.toLowerCase())) {
+        nextValue = `${baseValue}-${rowSuffix}-${collisionIndex}`
+        collisionIndex += 1
+      }
+
+      usedValues.add(nextValue.toLowerCase())
+      patches.push({
+        recordId: issue.recordId,
+        fieldName: issue.fieldName,
+        value: nextValue,
+        rowIndex: issue.rowIndex,
+        previousValue: baseValue,
+      })
+    })
+  })
+
+  return patches
+}
+
+function IssueInput({ issue, drafts, setDrafts, onSave, pendingKey, disabled }) {
   const key = `${issue.recordId}:${issue.fieldName}`
   const value = drafts[key] ?? issue.currentValue ?? ''
+  const isPending = pendingKey === key
 
   if (!issue.recordId || !issue.fieldName) {
     return <span className="muted-copy">Non modifiable</span>
@@ -24,8 +81,8 @@ function IssueInput({ issue, drafts, setDrafts, onSave, isPending }) {
           }))
         }
       />
-      <button className="primary-button small" type="button" onClick={() => onSave(issue, value)} disabled={isPending}>
-        Sauver
+      <button className="primary-button small" type="button" onClick={() => onSave(issue, value)} disabled={disabled || isPending}>
+        {isPending ? 'Sauvegarde...' : 'Sauver'}
       </button>
     </div>
   )
@@ -37,6 +94,8 @@ export function ImportPage() {
   const [file, setFile] = useState(null)
   const [page, setPage] = useState(1)
   const [drafts, setDrafts] = useState({})
+  const [feedback, setFeedback] = useState(null)
+  const [pendingIssueKey, setPendingIssueKey] = useState('')
 
   const importsQuery = useQuery({
     queryKey: ['imports'],
@@ -81,6 +140,46 @@ export function ImportPage() {
     },
   })
 
+  const autoFixMutation = useMutation({
+    mutationFn: async (importId) => {
+      const pageSize = 200
+      const issues = []
+      let currentPage = 1
+      let total = 0
+
+      do {
+        const response = await api.getImportIssues(importId, currentPage, pageSize)
+        issues.push(...response.items)
+        total = response.total || 0
+        currentPage += 1
+      } while (issues.length < total)
+
+      const patches = buildDuplicateEmployeeIdPatches(issues)
+      for (const patch of patches) {
+        await api.patchRecord(importId, patch.recordId, { [patch.fieldName]: patch.value })
+      }
+
+      return { patchedCount: patches.length }
+    },
+    onSuccess: async ({ patchedCount }) => {
+      await queryClient.invalidateQueries({ queryKey: ['imports'] })
+      await queryClient.invalidateQueries({ queryKey: ['import-detail', effectiveImportId] })
+      await queryClient.invalidateQueries({ queryKey: ['import-issues', effectiveImportId] })
+      await queryClient.invalidateQueries({ queryKey: ['dashboard'] })
+      await queryClient.invalidateQueries({ queryKey: ['predictions'] })
+      setDrafts({})
+      setFeedback({
+        type: patchedCount ? 'success' : 'info',
+        message: patchedCount
+          ? `${patchedCount} doublon(s) employee_id corrige(s). Validation relancee.`
+          : 'Aucun doublon employee_id automatisable trouve.',
+      })
+    },
+    onError: (error) => {
+      setFeedback({ type: 'error', message: error.message })
+    },
+  })
+
   const activateMutation = useMutation({
     mutationFn: api.activateImport,
     onSuccess: async () => {
@@ -105,11 +204,44 @@ export function ImportPage() {
     if (!issue.recordId || !issue.fieldName || !effectiveImportId) {
       return
     }
-    await patchMutation.mutateAsync({
-      importId: effectiveImportId,
-      recordId: issue.recordId,
-      payload: { [issue.fieldName]: value },
-    })
+    const trimmedValue = String(value ?? '').trim()
+    if (!trimmedValue) {
+      setFeedback({ type: 'error', message: 'La correction ne peut pas etre vide.' })
+      return
+    }
+
+    const key = issueKey(issue)
+    setPendingIssueKey(key)
+    setFeedback(null)
+    try {
+      await patchMutation.mutateAsync({
+        importId: effectiveImportId,
+        recordId: issue.recordId,
+        payload: { [issue.fieldName]: trimmedValue },
+      })
+      setDrafts((current) => {
+        const next = { ...current }
+        delete next[key]
+        return next
+      })
+      setFeedback({ type: 'success', message: `Correction sauvegardee pour la ligne ${issue.rowIndex}. Validation relancee.` })
+    } catch (error) {
+      setFeedback({ type: 'error', message: error.message })
+    } finally {
+      setPendingIssueKey('')
+    }
+  }
+
+  async function handleAutoFixDuplicates() {
+    if (!effectiveImportId) {
+      return
+    }
+    setFeedback(null)
+    try {
+      await autoFixMutation.mutateAsync(effectiveImportId)
+    } catch {
+      // Feedback is set in the mutation onError handler.
+    }
   }
 
   async function handleActivate() {
@@ -141,11 +273,15 @@ export function ImportPage() {
           drafts={drafts}
           setDrafts={setDrafts}
           onSave={handleSave}
-          isPending={patchMutation.isPending}
+          pendingKey={pendingIssueKey}
+          disabled={patchMutation.isPending || autoFixMutation.isPending}
         />
       ),
     },
   ]
+
+  const visibleAutoFixableCount =
+    issuesQuery.data?.items.filter((issue) => AUTO_FIXABLE_ISSUE_CODES.has(issue.issueCode)).length || 0
 
   const canActivate =
     currentImport &&
@@ -266,10 +402,41 @@ export function ImportPage() {
                       <p className="eyebrow">Validation</p>
                       <h3>Anomalies a corriger</h3>
                     </div>
-                    <span className="muted-copy">
-                      Page {page} / {Math.max(1, Math.ceil((issuesQuery.data?.total || 0) / 25))}
-                    </span>
+                    <div className="validation-actions">
+                      <button
+                        className="ghost-button"
+                        type="button"
+                        disabled={!effectiveImportId || autoFixMutation.isPending || patchMutation.isPending}
+                        onClick={handleAutoFixDuplicates}
+                      >
+                        {autoFixMutation.isPending ? 'Correction...' : 'Corriger doublons auto'}
+                      </button>
+                      <span className="muted-copy">
+                        Page {page} / {Math.max(1, Math.ceil((issuesQuery.data?.total || 0) / 25))}
+                      </span>
+                    </div>
                   </div>
+
+                  {feedback ? (
+                    <div
+                      className={
+                        feedback.type === 'error'
+                          ? 'error-banner'
+                          : feedback.type === 'success'
+                            ? 'success-banner'
+                            : 'info-banner'
+                      }
+                    >
+                      {feedback.message}
+                    </div>
+                  ) : null}
+
+                  {visibleAutoFixableCount ? (
+                    <div className="info-banner">
+                      {visibleAutoFixableCount} doublon(s) employee_id visible(s). La correction automatique garde la
+                      premiere occurrence et renomme les suivantes.
+                    </div>
+                  ) : null}
 
                   {issuesQuery.isLoading ? <div className="loading-card">Chargement des anomalies...</div> : null}
                   {issuesQuery.data ? (

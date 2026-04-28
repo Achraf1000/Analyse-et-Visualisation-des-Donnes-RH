@@ -2,10 +2,12 @@ import { useDeferredValue } from 'react'
 import { useQuery } from '@tanstack/react-query'
 import { CartesianGrid, Legend, ResponsiveContainer, Scatter, ScatterChart, Tooltip, XAxis, YAxis } from 'recharts'
 
+import { ActiveImportNotice } from '../components/ActiveImportNotice'
 import { ChartCard } from '../components/ChartCard'
 import { CorrelationHeatmap } from '../components/CorrelationHeatmap'
 import { FilterBar } from '../components/FilterBar'
 import { useGlobalFilters } from '../context/useGlobalFilters'
+import { useActiveImport } from '../hooks/useActiveImport'
 import { api } from '../lib/api'
 
 function ScatterPanel({ title, data }) {
@@ -21,8 +23,8 @@ function ScatterPanel({ title, data }) {
           <YAxis type="number" dataKey="y" stroke="#64748b" />
           <Tooltip cursor={{ strokeDasharray: '3 3' }} />
           <Legend />
-          <Scatter name="Rétention" data={retained} fill="#0f766e" />
-          <Scatter name="Départ" data={attrition} fill="#f97316" />
+          <Scatter name="Retention" data={retained} fill="#0f766e" />
+          <Scatter name="Depart" data={attrition} fill="#f97316" />
         </ScatterChart>
       </ResponsiveContainer>
     </ChartCard>
@@ -32,15 +34,18 @@ function ScatterPanel({ title, data }) {
 export function AnalyticsPage() {
   const { filters } = useGlobalFilters()
   const deferredFilters = useDeferredValue(filters)
-
-  const dashboardQuery = useQuery({
-    queryKey: ['analytics-dashboard-options', deferredFilters],
-    queryFn: () => api.getDashboard(deferredFilters),
-  })
+  const importsQuery = useActiveImport()
 
   const correlationsQuery = useQuery({
     queryKey: ['correlations', deferredFilters],
     queryFn: () => api.getCorrelations(deferredFilters),
+    enabled: importsQuery.hasActiveImport,
+  })
+
+  const filtersQuery = useQuery({
+    queryKey: ['analytics-filter-options'],
+    queryFn: api.getFilters,
+    enabled: importsQuery.hasActiveImport,
   })
 
   const correlations = correlationsQuery.data
@@ -50,21 +55,24 @@ export function AnalyticsPage() {
       <section className="hero-panel">
         <div>
           <p className="eyebrow">US4</p>
-          <h2>Explorer les corrélations entre formation, performance et rétention</h2>
+          <h2>Explorer les correlations entre formation, performance et retention</h2>
           <p className="muted-copy">
-            Passez du KPI à l’explication en observant les liens statistiques entre les variables RH clés.
+            Passez du KPI a l'explication en observant les liens statistiques entre les variables RH cles.
           </p>
         </div>
       </section>
 
-      <FilterBar options={dashboardQuery.data?.filters} />
+      {importsQuery.isLoading ? <div className="loading-card">Verification du dataset actif...</div> : null}
+      {!importsQuery.isLoading && !importsQuery.hasActiveImport ? <ActiveImportNotice hasImports={importsQuery.hasImports} /> : null}
 
-      {correlationsQuery.isLoading ? <div className="loading-card">Calcul des corrélations...</div> : null}
-      {correlationsQuery.isError ? <div className="empty-card">{correlationsQuery.error.message}</div> : null}
+      {importsQuery.hasActiveImport ? <FilterBar options={filtersQuery.data} /> : null}
 
-      {correlations ? (
+      {importsQuery.hasActiveImport && correlationsQuery.isLoading ? <div className="loading-card">Calcul des correlations...</div> : null}
+      {importsQuery.hasActiveImport && correlationsQuery.isError ? <div className="empty-card">{correlationsQuery.error.message}</div> : null}
+
+      {importsQuery.hasActiveImport && correlations ? (
         <>
-          <ChartCard title="Matrice de corrélation" subtitle="Valeurs proches de 1 ou -1 = relation plus forte">
+          <ChartCard title="Matrice de correlation" subtitle="Valeurs proches de 1 ou -1 = relation plus forte">
             <CorrelationHeatmap labels={correlations.labels} matrix={correlations.matrix} />
           </ChartCard>
 
@@ -78,7 +86,7 @@ export function AnalyticsPage() {
 
           <div className="chart-grid">
             <ScatterPanel title="Formation vs performance" data={correlations.scatterSeries.trainingVsPerformance} />
-            <ScatterPanel title="Satisfaction vs ancienneté" data={correlations.scatterSeries.satisfactionVsTenure} />
+            <ScatterPanel title="Satisfaction vs anciennete" data={correlations.scatterSeries.satisfactionVsTenure} />
             <ScatterPanel title="Salaire vs satisfaction" data={correlations.scatterSeries.salaryVsSatisfaction} />
           </div>
         </>

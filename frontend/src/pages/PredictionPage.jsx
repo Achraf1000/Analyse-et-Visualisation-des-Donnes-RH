@@ -2,10 +2,12 @@ import { useDeferredValue } from 'react'
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { Bar, BarChart, CartesianGrid, Cell, ResponsiveContainer, Tooltip, XAxis, YAxis } from 'recharts'
 
+import { ActiveImportNotice } from '../components/ActiveImportNotice'
 import { ChartCard } from '../components/ChartCard'
 import { DataTable } from '../components/DataTable'
 import { FilterBar } from '../components/FilterBar'
 import { useGlobalFilters } from '../context/useGlobalFilters'
+import { useActiveImport } from '../hooks/useActiveImport'
 import { api } from '../lib/api'
 import { formatCurrency, formatDateTime, formatPercent, labelizeRisk } from '../lib/format'
 
@@ -20,15 +22,18 @@ export function PredictionPage() {
   const queryClient = useQueryClient()
   const { filters } = useGlobalFilters()
   const deferredFilters = useDeferredValue(filters)
+  const importsQuery = useActiveImport()
 
   const dashboardQuery = useQuery({
     queryKey: ['prediction-dashboard-options', deferredFilters],
     queryFn: () => api.getDashboard(deferredFilters),
+    enabled: importsQuery.hasActiveImport,
   })
 
   const predictionsQuery = useQuery({
     queryKey: ['predictions', deferredFilters],
     queryFn: () => api.getPredictions(deferredFilters),
+    enabled: importsQuery.hasActiveImport,
   })
 
   const trainMutation = useMutation({
@@ -50,7 +55,7 @@ export function PredictionPage() {
   const predictionColumns = [
     {
       accessorKey: 'employeeId',
-      header: 'Employé',
+      header: 'Employe',
       cell: ({ row }) => (
         <div>
           <strong>{row.original.fullName || row.original.employeeId}</strong>
@@ -60,7 +65,7 @@ export function PredictionPage() {
     },
     {
       accessorKey: 'tenureYears',
-      header: 'Ancienneté',
+      header: 'Anciennete',
       cell: ({ getValue }) => `${getValue() || 0} ans`,
     },
     {
@@ -74,7 +79,7 @@ export function PredictionPage() {
     },
     {
       accessorKey: 'riskProbability',
-      header: 'Probabilité',
+      header: 'Probabilite',
       cell: ({ getValue }) => formatPercent(Number((getValue() || 0) * 100).toFixed(2)),
     },
     {
@@ -89,27 +94,35 @@ export function PredictionPage() {
       <section className="hero-panel hero-panel-split">
         <div>
           <p className="eyebrow">US5</p>
-          <h2>Prédire le risque de départ des employés</h2>
+          <h2>Predire le risque de depart des employes</h2>
           <p className="muted-copy">
-            Entraînez un modèle de régression logistique interprétable, inspectez ses métriques et priorisez les cas à
+            Entrainez un modele de regression logistique interpretable, inspectez ses metriques et priorisez les cas a
             risque.
           </p>
         </div>
 
         <div className="cta-cluster">
-          <button className="primary-button" type="button" onClick={() => trainMutation.mutate()} disabled={trainMutation.isPending}>
-            {trainMutation.isPending ? 'Entraînement...' : 'Lancer l’entraînement'}
+          <button
+            className="primary-button"
+            type="button"
+            onClick={() => trainMutation.mutate()}
+            disabled={!importsQuery.hasActiveImport || trainMutation.isPending}
+          >
+            {trainMutation.isPending ? 'Entrainement...' : "Lancer l'entrainement"}
           </button>
           {trainMutation.isError ? <span className="error-text">{trainMutation.error.message}</span> : null}
         </div>
       </section>
 
-      <FilterBar options={dashboardQuery.data?.filters} />
+      {importsQuery.isLoading ? <div className="loading-card">Verification du dataset actif...</div> : null}
+      {!importsQuery.isLoading && !importsQuery.hasActiveImport ? <ActiveImportNotice hasImports={importsQuery.hasImports} /> : null}
 
-      {predictionsQuery.isLoading ? <div className="loading-card">Calcul des prédictions...</div> : null}
-      {predictionsQuery.isError ? <div className="empty-card">{predictionsQuery.error.message}</div> : null}
+      {importsQuery.hasActiveImport ? <FilterBar options={dashboardQuery.data?.filters} /> : null}
 
-      {predictions?.modelRun ? (
+      {importsQuery.hasActiveImport && predictionsQuery.isLoading ? <div className="loading-card">Calcul des predictions...</div> : null}
+      {importsQuery.hasActiveImport && predictionsQuery.isError ? <div className="empty-card">{predictionsQuery.error.message}</div> : null}
+
+      {importsQuery.hasActiveImport && predictions?.modelRun ? (
         <>
           <div className="summary-grid">
             <article className="summary-card">
@@ -131,7 +144,7 @@ export function PredictionPage() {
           </div>
 
           <div className="chart-grid chart-grid-wide">
-            <ChartCard title="Top employés à risque">
+            <ChartCard title="Top employes a risque">
               <ResponsiveContainer width="100%" height={320}>
                 <BarChart data={topRiskData}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#cbd5e1" />
@@ -147,13 +160,13 @@ export function PredictionPage() {
               </ResponsiveContainer>
             </ChartCard>
 
-            <ChartCard title="Dernier entraînement" subtitle={`Exécuté le ${formatDateTime(predictions.modelRun.trainedAt)}`}>
+            <ChartCard title="Dernier entrainement" subtitle={`Execute le ${formatDateTime(predictions.modelRun.trainedAt)}`}>
               <div className="confusion-grid">
                 {predictions.modelRun.confusionMatrix.map((row, rowIndex) =>
                   row.map((value, cellIndex) => (
                     <div className="confusion-cell" key={`${rowIndex}-${cellIndex}`}>
                       <span>
-                        {rowIndex === 0 ? 'Réel 0' : 'Réel 1'} · {cellIndex === 0 ? 'Prédit 0' : 'Prédit 1'}
+                        {rowIndex === 0 ? 'Reel 0' : 'Reel 1'} · {cellIndex === 0 ? 'Predit 0' : 'Predit 1'}
                       </span>
                       <strong>{value}</strong>
                     </div>
@@ -174,15 +187,19 @@ export function PredictionPage() {
             </ChartCard>
           </div>
         </>
-      ) : (
-        <div className="empty-card">
-          Aucun modèle entraîné pour le dataset actif. Lancez un entraînement pour afficher les probabilités de départ.
-        </div>
-      )}
+      ) : null}
 
-      <ChartCard title="Probabilités de départ par employé" subtitle="Données filtrées selon le périmètre global">
-        <DataTable data={predictions?.items || []} columns={predictionColumns} emptyMessage="Aucune prédiction disponible." />
-      </ChartCard>
+      {importsQuery.hasActiveImport && predictions && !predictions.modelRun ? (
+        <div className="empty-card">
+          Aucun modele entraine pour le dataset actif. Lancez un entrainement pour afficher les probabilites de depart.
+        </div>
+      ) : null}
+
+      {importsQuery.hasActiveImport ? (
+        <ChartCard title="Probabilites de depart par employe" subtitle="Donnees filtrees selon le perimetre global">
+          <DataTable data={predictions?.items || []} columns={predictionColumns} emptyMessage="Aucune prediction disponible." />
+        </ChartCard>
+      ) : null}
     </div>
   )
 }
